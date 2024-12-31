@@ -1,0 +1,144 @@
+const express = require('express');
+const rtspStream = require('node-rtsp-stream');
+const WebSocket = require('ws');
+const jwt = require('jsonwebtoken');
+
+const app = express();
+const PORT = 3000;
+const STREAM_PORT_BASE = 9990;
+const SECRET = 'sua-chave-secreta';
+
+// Array de câmeras
+const cameras = [
+    { id: 1, name: 'Camera 1', ip: '10.0.17.11', channel: 1, subtype: 0 },
+    { id: 2, name: 'Camera 2', ip: '10.0.17.12', channel: 2, subtype: 1 }
+];
+
+// Streams
+const streams = cameras.map((camera, index) => {
+    const wsPort = STREAM_PORT_BASE + index;
+    return {
+        ...camera,
+        stream: new rtspStream({
+            streamUrl: `rtsp://admin:admin@${camera.ip}:554/cam/realmonitor?channel=${camera.channel}&subtype=${camera.subtype}`,
+            wsPort: wsPort
+        }),
+        wsPort: wsPort
+    };
+});
+
+// Middleware de autenticação JWT para o WebSocket
+function authenticateWebSocket(ws, req) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const token = url.searchParams.get('token');
+
+    try {
+        jwt.verify(token, SECRET);
+        console.log('Cliente autorizado.');
+    } catch (err) {
+        console.error('Autenticação falhou:', err.message);
+        ws.close();
+    }
+}
+
+// Configurando WebSocket para cada stream
+streams.forEach(({ stream, wsPort }) => {
+    const wss = new WebSocket.Server({ port: wsPort });
+    wss.on('connection', (ws, req) => authenticateWebSocket(ws, req) || stream.wsServer.emit('connection', ws, req));
+});
+
+// Endpoint para listar câmeras
+app.get('/api/cameras', (req, res) => {
+    const cameraList = streams.map(({ id, name, wsPort }) => ({ id, name, wsPort }));
+    res.json(cameraList);
+});
+
+// Iniciar servidor
+app.listen(PORT, () => {
+    console.log(`Servidor iniciado em http://localhost:${PORT}`);
+});
+
+ /////////////////////////////////////////////////////
+<template>
+  <div>
+    <h1>Lista de Câmeras</h1>
+    <div class="camera-grid">
+      <div 
+        v-for="camera in cameras" 
+        :key="camera.id" 
+        class="camera-thumbnail" 
+        @click="viewCamera(camera)">
+        <canvas :id="'camera-' + camera.id"></canvas>
+        <p>{{ camera.name }}</p>
+      </div>
+    </div>
+    <div v-if="selectedCamera" class="fullscreen-overlay" @click="closeFullscreen">
+      <canvas :id="'fullscreen-camera'"></canvas>
+    </div>
+  </div>
+</template>
+
+<script>
+import jsmpeg from "jsmpeg";
+
+export default {
+  data() {
+    return {
+      cameras: [],
+      selectedCamera: null,
+    };
+  },
+  methods: {
+    async fetchCameras() {
+      const response = await fetch('/api/cameras');
+      this.cameras = await response.json();
+
+      this.cameras.forEach((camera) => {
+        const canvas = document.getElementById('camera-' + camera.id);
+        const websocket = new WebSocket(`ws://localhost:${camera.wsPort}?token=seu-token-jwt-aqui`);
+        new jsmpeg(websocket, { canvas, autoplay: true, loop: true });
+      });
+    },
+    viewCamera(camera) {
+      this.selectedCamera = camera;
+
+      this.$nextTick(() => {
+        const canvas = document.getElementById('fullscreen-camera');
+        const websocket = new WebSocket(`ws://localhost:${camera.wsPort}?token=seu-token-jwt-aqui`);
+        new jsmpeg(websocket, { canvas, autoplay: true, loop: true });
+      });
+    },
+    closeFullscreen() {
+      this.selectedCamera = null;
+    }
+  },
+  mounted() {
+    this.fetchCameras();
+  }
+};
+</script>
+
+<style>
+.camera-grid {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.camera-thumbnail {
+  cursor: pointer;
+  text-align: center;
+}
+.fullscreen-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+</style>
+
